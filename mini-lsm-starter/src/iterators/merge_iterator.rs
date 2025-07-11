@@ -17,6 +17,7 @@
 
 use std::cmp::{self};
 use std::collections::BinaryHeap;
+use std::collections::binary_heap::PeekMut;
 
 use anyhow::Result;
 
@@ -59,7 +60,16 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let mut iters: BinaryHeap<_> = iters
+            .into_iter()
+            .filter(|iter| iter.is_valid())
+            .enumerate()
+            .map(|item| HeapWrapper(item.0, item.1))
+            .collect();
+
+        let current = iters.pop();
+
+        Self { iters, current }
     }
 }
 
@@ -69,18 +79,77 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        if let Some(current) = &self.current {
+            current.1.key()
+        } else {
+            unreachable!()
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if let Some(current) = &self.current {
+            current.1.value()
+        } else {
+            unreachable!()
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current.is_some()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if !self.is_valid() {
+            return Ok(());
+        }
+
+        if let Some(mut current) = self.current.take() {
+            let used_key = current.1.key();
+
+            loop {
+                if let Some(mut iter) = self.iters.peek_mut() {
+                    while iter.1.is_valid() && iter.1.key() <= used_key {
+                        if let Err(err) = iter.1.next() {
+                            PeekMut::pop(iter);
+                            return Err(err);
+                        }
+                    }
+
+                    if !iter.1.is_valid() {
+                        PeekMut::pop(iter);
+                    }
+                } else {
+                    break;
+                }
+
+                if let Some(iter) = self.iters.peek() {
+                    if iter.1.key() > used_key {
+                        break;
+                    }
+                }
+            }
+
+            current.1.next()?;
+
+            if !current.1.is_valid() {
+                self.current = self.iters.pop();
+                return Ok(());
+            }
+
+            let exchange = if let Some(peek) = self.iters.peek() {
+                *peek > current
+            } else {
+                false
+            };
+
+            if exchange {
+                self.iters.push(current);
+                self.current = self.iters.pop();
+            } else {
+                self.current = Some(current);
+            }
+        }
+
+        Ok(())
     }
 }
