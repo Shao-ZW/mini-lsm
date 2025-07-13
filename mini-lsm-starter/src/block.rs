@@ -69,13 +69,20 @@ impl Block {
 
     pub fn get_first_key(&self) -> KeyVec {
         let entry_start = 0;
-        let entry_end = self
-            .offsets
-            .get(1)
-            .copied()
-            .unwrap_or(self.data.len() as u16) as usize;
+        let mut raw_entry = &self.data[entry_start..];
 
-        let mut raw_entry = &self.data[entry_start..entry_end];
+        let key_len = raw_entry.get_u16_le() as usize;
+        KeyVec::from_vec(raw_entry[..key_len].to_vec())
+    }
+
+    pub fn get_last_key(&self) -> KeyVec {
+        let entry_start = self
+            .offsets
+            .last()
+            .copied()
+            .expect("At least have one key-value pair") as usize;
+
+        let mut raw_entry = &self.data[entry_start..];
 
         let key_len = raw_entry.get_u16_le() as usize;
         KeyVec::from_vec(raw_entry[..key_len].to_vec())
