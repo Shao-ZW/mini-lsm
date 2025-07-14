@@ -12,29 +12,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
+use std::ops::Bound;
 
 use anyhow::{Result, anyhow};
+use bytes::Bytes;
+use nom::AsBytes;
 
 use crate::{
-    iterators::{StorageIterator, merge_iterator::MergeIterator},
+    iterators::{
+        StorageIterator, merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator,
+    },
+    key::KeySlice,
     mem_table::MemTableIterator,
+    table::SsTableIterator,
 };
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the course for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    end_bound: Bound<Bytes>,
+    is_valid: bool,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(mut iter: LsmIteratorInner) -> Result<Self> {
+    pub(crate) fn new(mut iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
         while iter.is_valid() && iter.value().is_empty() {
             iter.next()?;
         }
-        Ok(Self { inner: iter })
+        let is_valid = iter.is_valid();
+
+        Ok(Self {
+            inner: iter,
+            end_bound,
+            is_valid,
+        })
     }
 }
 
@@ -42,7 +56,7 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid()
+        self.is_valid
     }
 
     fn key(&self) -> &[u8] {
@@ -54,14 +68,41 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
+        if !self.is_valid {
+            return Ok(());
+        }
+
         loop {
             self.inner.next()?;
 
-            if self.inner.is_valid() && self.inner.value().is_empty() {
+            if !self.inner.is_valid() {
+                self.is_valid = false;
+                break;
+            }
+
+            match &self.end_bound {
+                Bound::Excluded(key) => {
+                    if self.inner.key() >= KeySlice::from_slice(key.as_bytes()) {
+                        self.is_valid = false;
+                        break;
+                    }
+                }
+                Bound::Included(key) => {
+                    if self.inner.key() > KeySlice::from_slice(key.as_bytes()) {
+                        self.is_valid = false;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+
+            if self.inner.value().is_empty() {
                 continue;
             }
+
             break;
         }
+
         Ok(())
     }
 }

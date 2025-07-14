@@ -112,14 +112,9 @@ impl SsTableBuilder {
 
         let block = block_builder.build();
         let mut block_data = block.encode().to_vec();
-        let offset = self
-            .meta
-            .last()
-            .map(|meta| meta.offset + block_data.len())
-            .unwrap_or(0);
 
         self.meta.push(BlockMeta {
-            offset,
+            offset: self.data.len(),
             first_key: block.get_first_key().into_key_bytes(),
             last_key: block.get_last_key().into_key_bytes(),
         });

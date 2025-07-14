@@ -65,18 +65,19 @@ impl BlockBuilder {
             self.first_key = key.to_key_vec();
         }
 
+        self.offsets.push(
+            self.data
+                .len()
+                .try_into()
+                .expect("The offset should not bigger than 65535(2 Bytes)"),
+        );
+
         self.current_size += entry_size as usize + OFFSET_LEN;
 
         self.data.put_u16_le(key.len() as u16);
         self.data.put_slice(key.raw_ref());
         self.data.put_u16_le(value.len() as u16);
         self.data.put_slice(value);
-
-        if let Some(last_offset) = self.offsets.last() {
-            self.offsets.push(*last_offset + entry_size);
-        } else {
-            self.offsets.push(0);
-        }
 
         true
     }
