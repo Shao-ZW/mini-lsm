@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use nom::AsBytes;
@@ -136,8 +136,11 @@ impl MemTable {
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
-    pub fn flush(&self, _builder: &mut SsTableBuilder) -> Result<()> {
-        unimplemented!()
+    pub fn flush(&self, builder: &mut SsTableBuilder) -> Result<()> {
+        for item in self.map.iter() {
+            builder.add(KeySlice::from_slice(item.key()), item.value());
+        }
+        Ok(())
     }
 
     pub fn id(&self) -> usize {

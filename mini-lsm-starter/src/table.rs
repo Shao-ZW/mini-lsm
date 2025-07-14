@@ -17,6 +17,7 @@ mod builder;
 mod iterator;
 
 use std::fs::File;
+use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -253,6 +254,39 @@ impl SsTable {
         }
 
         lbound
+    }
+
+    /// Check whether sstable contains the key in the bound
+    pub fn range_overlap(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
+        match lower {
+            Bound::Excluded(key) => {
+                if self.last_key.raw_ref() <= key {
+                    return false;
+                }
+            }
+            Bound::Included(key) => {
+                if self.last_key.raw_ref() < key {
+                    return false;
+                }
+            }
+            Bound::Unbounded => {}
+        }
+
+        match upper {
+            Bound::Excluded(key) => {
+                if self.first_key.raw_ref() >= key {
+                    return false;
+                }
+            }
+            Bound::Included(key) => {
+                if self.first_key.raw_ref() > key {
+                    return false;
+                }
+            }
+            Bound::Unbounded => {}
+        }
+
+        true
     }
 
     /// Get number of data blocks.

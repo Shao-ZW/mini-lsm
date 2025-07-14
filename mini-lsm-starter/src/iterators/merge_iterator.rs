@@ -149,4 +149,16 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
 
         Ok(())
     }
+
+    fn num_active_iterators(&self) -> usize {
+        let mut num = self
+            .iters
+            .iter()
+            .map(|iter| iter.1.num_active_iterators())
+            .sum();
+        if let Some(iter) = &self.current {
+            num += iter.1.num_active_iterators();
+        }
+        num
+    }
 }
