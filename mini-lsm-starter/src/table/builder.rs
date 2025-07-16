@@ -19,7 +19,12 @@ use anyhow::Result;
 use bytes::BufMut;
 
 use super::{BlockMeta, SsTable};
-use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache, table::FileObject};
+use crate::{
+    block::BlockBuilder,
+    key::KeySlice,
+    lsm_storage::BlockCache,
+    table::{FileObject, bloom::Bloom},
+};
 
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
@@ -27,7 +32,10 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    hash_keys: Vec<u32>,
 }
+
+const BLOOM_FALSE_POSITIVE_RATE: f64 = 0.01;
 
 impl SsTableBuilder {
     /// Create a builder based on target block size.
@@ -36,6 +44,7 @@ impl SsTableBuilder {
             builder: BlockBuilder::new(block_size),
             data: Vec::new(),
             meta: Vec::new(),
+            hash_keys: Vec::new(),
             block_size,
         }
     }
@@ -51,6 +60,8 @@ impl SsTableBuilder {
             self.force_build_block();
             let _ = self.builder.add(key, value);
         }
+
+        self.hash_keys.push(farmhash::fingerprint32(key.raw_ref()));
     }
 
     /// Get the estimated size of the SSTable.
@@ -90,15 +101,27 @@ impl SsTableBuilder {
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
         self.data.put_u32_le(meta_offset as u32);
 
+        let bloom_offset = self.data.len();
+        let bloom = Bloom::build_from_key_hashes(
+            &self.hash_keys,
+            Bloom::bloom_bits_per_key(self.hash_keys.len(), BLOOM_FALSE_POSITIVE_RATE),
+        );
+        bloom.encode(&mut self.data);
+        self.data.put_u32_le(bloom_offset as u32);
+
         let file = FileObject::create(path.as_ref(), self.data)?;
 
-        let mut table = SsTable::create_meta_only(id, file.size(), first_key, last_key);
-
-        table.file = file;
-        table.block_meta = self.meta;
-        table.block_meta_offset = meta_offset;
-
-        Ok(table)
+        Ok(SsTable {
+            file,
+            block_meta: self.meta,
+            block_meta_offset: meta_offset,
+            id,
+            block_cache,
+            first_key,
+            last_key,
+            bloom: Some(bloom),
+            max_ts: 0,
+        })
     }
 
     #[cfg(test)]

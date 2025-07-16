@@ -17,7 +17,7 @@ use std::sync::Arc;
 use bytes::Buf;
 
 use crate::{
-    block::{KEY_LEN, VALUE_LEN},
+    block::{KEY_OVERLAP_LEN_SIZE, KEY_REST_LEN_SIZE, VALUE_LEN_SIZE},
     key::{KeySlice, KeyVec},
 };
 
@@ -132,10 +132,19 @@ impl BlockIterator {
             .unwrap_or(self.block.data.len() as u16) as usize;
 
         let mut raw_entry = &self.block.data[entry_start..entry_end];
+        let key_overlap_len = raw_entry.get_u16_le() as usize;
+        let key_rest_len = raw_entry.get_u16_le() as usize;
 
-        let key_len = raw_entry.get_u16_le() as usize;
-        self.key = KeyVec::from_vec(raw_entry[..key_len].to_vec());
+        self.key = KeyVec::from_vec({
+            let mut key = Vec::with_capacity(key_overlap_len + key_rest_len);
+            key.extend_from_slice(&self.first_key.raw_ref()[..key_overlap_len]);
+            key.extend_from_slice(&raw_entry[..key_rest_len]);
+            key
+        });
 
-        self.value_range = (entry_start + KEY_LEN + key_len + VALUE_LEN, entry_end);
+        self.value_range = (
+            entry_start + KEY_OVERLAP_LEN_SIZE + KEY_REST_LEN_SIZE + key_rest_len + VALUE_LEN_SIZE,
+            entry_end,
+        );
     }
 }

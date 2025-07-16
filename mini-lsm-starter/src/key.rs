@@ -129,6 +129,19 @@ impl<'a> Key<&'a [u8]> {
         self.0
     }
 
+    pub fn overlap_prefix_len(&self, other: Self) -> usize {
+        let mut overlap_len = 0;
+        for (c1, c2) in self.0.iter().zip(other.0.iter()) {
+            if c1 == c2 {
+                overlap_len += 1;
+            } else {
+                break;
+            }
+        }
+
+        overlap_len
+    }
+
     pub fn for_testing_key_ref(self) -> &'a [u8] {
         self.0
     }

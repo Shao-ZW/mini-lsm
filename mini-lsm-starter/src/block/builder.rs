@@ -15,7 +15,7 @@
 use bytes::BufMut;
 
 use crate::{
-    block::{KEY_LEN, OFFSET_LEN, VALUE_LEN},
+    block::{KEY_OVERLAP_LEN_SIZE, KEY_REST_LEN_SIZE, OFFSET_LEN_SIZE, VALUE_LEN_SIZE},
     key::{KeySlice, KeyVec},
 };
 
@@ -42,7 +42,7 @@ impl BlockBuilder {
             offsets: Vec::new(),
             data: Vec::new(),
             block_size,
-            current_size: OFFSET_LEN, // num of elements initialize to 0
+            current_size: OFFSET_LEN_SIZE, // num of elements initialize to 0
             first_key: KeyVec::new(),
         }
     }
@@ -51,11 +51,18 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let entry_size: u16 = (KEY_LEN + VALUE_LEN + key.len() + value.len())
-            .try_into()
-            .expect("The entry len should not bigger than 65535(2 Bytes)");
+        let key_overlap_len = key.overlap_prefix_len(self.first_key.as_key_slice());
+        let key_rest_len = key.len() - key_overlap_len;
 
-        if self.current_size + entry_size as usize + OFFSET_LEN > self.block_size
+        let entry_size: u16 = (KEY_OVERLAP_LEN_SIZE
+            + KEY_REST_LEN_SIZE
+            + key_rest_len
+            + VALUE_LEN_SIZE
+            + value.len())
+        .try_into()
+        .expect("The entry len should not bigger than 65535(2 Bytes)");
+
+        if self.current_size + entry_size as usize + OFFSET_LEN_SIZE > self.block_size
             && !self.offsets.is_empty()
         {
             return false;
@@ -72,10 +79,11 @@ impl BlockBuilder {
                 .expect("The offset should not bigger than 65535(2 Bytes)"),
         );
 
-        self.current_size += entry_size as usize + OFFSET_LEN;
+        self.current_size += entry_size as usize + OFFSET_LEN_SIZE;
 
-        self.data.put_u16_le(key.len() as u16);
-        self.data.put_slice(key.raw_ref());
+        self.data.put_u16_le(key_overlap_len as u16);
+        self.data.put_u16_le(key_rest_len as u16);
+        self.data.put_slice(&key.raw_ref()[key_overlap_len..]);
         self.data.put_u16_le(value.len() as u16);
         self.data.put_slice(value);
 

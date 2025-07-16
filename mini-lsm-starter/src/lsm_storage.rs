@@ -328,16 +328,16 @@ impl LsmStorageInner {
         }
 
         let sst_iters = {
+            let key = KeySlice::from_slice(key);
             let mut sst_iters_vec = Vec::with_capacity(state.l0_sstables.len());
 
             for sstable in state
                 .l0_sstables
                 .iter()
                 .map(|sst_id| state.sstables[sst_id].clone())
-                .filter(|sst| sst.range_overlap(Bound::Included(key), Bound::Included(key)))
+                .filter(|sst| sst.bloom_filter(key))
             {
-                let sst_iter =
-                    SsTableIterator::create_and_seek_to_key(sstable, KeySlice::from_slice(key))?;
+                let sst_iter = SsTableIterator::create_and_seek_to_key(sstable, key)?;
                 sst_iters_vec.push(Box::new(sst_iter));
             }
 

@@ -22,12 +22,14 @@ use bytes::{Buf, BufMut, Bytes};
 
 use crate::key::KeyVec;
 
-// Key length 2 bytes
-const KEY_LEN: usize = 2;
+// Key overlap length 2 bytes
+const KEY_OVERLAP_LEN_SIZE: usize = 2;
+// Key rest length 2 bytes
+const KEY_REST_LEN_SIZE: usize = 2;
 // Value length 2 bytes
-const VALUE_LEN: usize = 2;
+const VALUE_LEN_SIZE: usize = 2;
 // Offset length and num of elements both 2 bytes
-const OFFSET_LEN: usize = 2;
+const OFFSET_LEN_SIZE: usize = 2;
 
 /// A block is the smallest unit of read and caching in LSM tree. It is a collection of sorted key-value pairs.
 pub struct Block {
@@ -50,17 +52,17 @@ impl Block {
 
     /// Decode from the data layout, transform the input `data` to a single `Block`
     pub fn decode(data: &[u8]) -> Self {
-        assert!(data.len() >= OFFSET_LEN);
+        assert!(data.len() >= OFFSET_LEN_SIZE);
 
-        let elements_num = (&data[data.len() - OFFSET_LEN..]).get_u16_le() as usize;
-        let data_end = data.len() - (elements_num + 1) * OFFSET_LEN;
+        let elements_num = (&data[data.len() - OFFSET_LEN_SIZE..]).get_u16_le() as usize;
+        let data_end = data.len() - (elements_num + 1) * OFFSET_LEN_SIZE;
 
         let data_raw = &data[..data_end];
-        let offsets_raw = &data[data_end..data.len() - OFFSET_LEN];
+        let offsets_raw = &data[data_end..data.len() - OFFSET_LEN_SIZE];
 
         let data = data_raw.to_vec();
         let offsets = offsets_raw
-            .chunks(OFFSET_LEN)
+            .chunks(OFFSET_LEN_SIZE)
             .map(|mut chunk| chunk.get_u16_le())
             .collect();
 
@@ -71,8 +73,10 @@ impl Block {
         let entry_start = 0;
         let mut raw_entry = &self.data[entry_start..];
 
-        let key_len = raw_entry.get_u16_le() as usize;
-        KeyVec::from_vec(raw_entry[..key_len].to_vec())
+        let key_overlap_len = raw_entry.get_u16_le() as usize;
+        assert_eq!(key_overlap_len, 0);
+        let key_rest_len = raw_entry.get_u16_le() as usize;
+        KeyVec::from_vec(raw_entry[..key_rest_len].to_vec())
     }
 
     pub fn get_last_key(&self) -> KeyVec {
@@ -84,7 +88,15 @@ impl Block {
 
         let mut raw_entry = &self.data[entry_start..];
 
-        let key_len = raw_entry.get_u16_le() as usize;
-        KeyVec::from_vec(raw_entry[..key_len].to_vec())
+        let key_overlap_len = raw_entry.get_u16_le() as usize;
+        let key_rest_len = raw_entry.get_u16_le() as usize;
+        let first_key = self.get_first_key();
+
+        KeyVec::from_vec({
+            let mut key = Vec::with_capacity(key_overlap_len + key_rest_len);
+            key.extend_from_slice(&first_key.raw_ref()[..key_overlap_len]);
+            key.extend_from_slice(&raw_entry[..key_rest_len]);
+            key
+        })
     }
 }

@@ -33,6 +33,7 @@ use crate::lsm_storage::BlockCache;
 use self::bloom::Bloom;
 
 const META_BLOCK_OFFSET_LEN: usize = 4;
+const BLOOM_FILTER_OFFSET_LEN: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockMeta {
@@ -142,9 +143,25 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
+        let bloom_filter_offset = file
+            .read(
+                file.1 - BLOOM_FILTER_OFFSET_LEN as u64,
+                BLOOM_FILTER_OFFSET_LEN as u64,
+            )?
+            .as_slice()
+            .get_u32_le() as usize;
+
+        let bloom = Bloom::decode(
+            file.read(
+                bloom_filter_offset as u64,
+                file.1 - bloom_filter_offset as u64 - BLOOM_FILTER_OFFSET_LEN as u64,
+            )?
+            .as_slice(),
+        )?;
+
         let block_meta_offset = file
             .read(
-                file.1 - META_BLOCK_OFFSET_LEN as u64,
+                (bloom_filter_offset - META_BLOCK_OFFSET_LEN) as u64,
                 META_BLOCK_OFFSET_LEN as u64,
             )?
             .as_slice()
@@ -153,7 +170,7 @@ impl SsTable {
         let block_meta = BlockMeta::decode_block_meta(
             file.read(
                 block_meta_offset as u64,
-                file.1 - block_meta_offset as u64 - META_BLOCK_OFFSET_LEN as u64,
+                (bloom_filter_offset - block_meta_offset - META_BLOCK_OFFSET_LEN) as u64,
             )?
             .as_slice(),
         );
@@ -178,7 +195,7 @@ impl SsTable {
             block_cache,
             first_key,
             last_key,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }
@@ -287,6 +304,15 @@ impl SsTable {
         }
 
         true
+    }
+
+    /// Using bloom filter check whether sstable contains the key
+    pub fn bloom_filter(&self, key: KeySlice) -> bool {
+        if let Some(bloom) = &self.bloom {
+            bloom.may_contain(farmhash::fingerprint32(key.raw_ref()))
+        } else {
+            true
+        }
     }
 
     /// Get number of data blocks.
