@@ -30,8 +30,10 @@ pub use simple_leveled::{
 };
 pub use tiered::{TieredCompactionController, TieredCompactionOptions, TieredCompactionTask};
 
+use crate::iterators::StorageIterator;
+use crate::iterators::merge_iterator::MergeIterator;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CompactionTask {
@@ -123,12 +125,123 @@ pub enum CompactionOptions {
 }
 
 impl LsmStorageInner {
-    fn compact(&self, _task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
-        unimplemented!()
+    fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
+        let state = self.state.read().clone();
+
+        match task {
+            CompactionTask::ForceFullCompaction {
+                l0_sstables,
+                l1_sstables,
+            } => {
+                let mut iters = Vec::with_capacity(l0_sstables.len() + l1_sstables.len());
+                for sstable in l0_sstables
+                    .iter()
+                    .chain(l1_sstables.iter())
+                    .map(|sst_id| state.sstables[sst_id].clone())
+                {
+                    iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
+                        sstable,
+                    )?));
+                }
+
+                let mut merge_iterator = MergeIterator::create(iters);
+                let mut sstable_builder = Some(SsTableBuilder::new(self.options.block_size));
+                let mut compact_sstables = Vec::new();
+
+                while merge_iterator.is_valid() {
+                    if sstable_builder.is_none() {
+                        sstable_builder = Some(SsTableBuilder::new(self.options.block_size));
+                    }
+
+                    let builder = sstable_builder.as_mut().unwrap();
+                    if !merge_iterator.value().is_empty() {
+                        builder.add(merge_iterator.key(), merge_iterator.value());
+                    }
+
+                    if builder.estimated_size() >= self.options.target_sst_size {
+                        let builder = sstable_builder.take().unwrap();
+                        let sst_id = self.next_sst_id();
+                        let sstable = builder.build(
+                            sst_id,
+                            Some(self.block_cache.clone()),
+                            self.path_of_sst(sst_id),
+                        )?;
+
+                        compact_sstables.push(Arc::new(sstable));
+                    }
+
+                    merge_iterator.next()?;
+                }
+
+                if let Some(builder) = sstable_builder {
+                    let sst_id = self.next_sst_id();
+                    let sstable = builder.build(
+                        sst_id,
+                        Some(self.block_cache.clone()),
+                        self.path_of_sst(sst_id),
+                    )?;
+
+                    compact_sstables.push(Arc::new(sstable));
+                }
+
+                Ok(compact_sstables)
+            }
+            _ => unimplemented!(),
+        }
     }
 
     pub fn force_full_compaction(&self) -> Result<()> {
-        unimplemented!()
+        let state = self.state.read().clone();
+
+        let compaction_task = CompactionTask::ForceFullCompaction {
+            l0_sstables: state.l0_sstables.clone(),
+            l1_sstables: state.levels[0].1.clone(),
+        };
+        let compaction_sstables = self.compact(&compaction_task)?;
+
+        let state_guard = self.state_lock.lock();
+        let mut new_state = (**self.state.read()).clone();
+
+        let (old_l0_sstables, old_l1_sstables) = {
+            match &compaction_task {
+                CompactionTask::ForceFullCompaction {
+                    l0_sstables,
+                    l1_sstables,
+                } => (l0_sstables, l1_sstables),
+                _ => {
+                    // SAFETY: compaction_task is initialized to ForceFullCompaction and remains unchanged
+                    unsafe { std::hint::unreachable_unchecked() }
+                }
+            }
+        };
+
+        for remove_sst_id in old_l0_sstables.iter().chain(old_l1_sstables.iter()) {
+            new_state.sstables.remove(remove_sst_id);
+        }
+
+        for insert_sstable in &compaction_sstables {
+            new_state
+                .sstables
+                .insert(insert_sstable.sst_id(), insert_sstable.clone());
+        }
+
+        new_state
+            .l0_sstables
+            .retain(|sst_id| !old_l0_sstables.contains(sst_id));
+
+        let _ = std::mem::replace(
+            &mut new_state.levels[0].1,
+            compaction_sstables
+                .iter()
+                .map(|sstable| sstable.sst_id())
+                .collect(),
+        );
+
+        *self.state.write() = Arc::new(new_state);
+
+        drop(state_guard);
+
+        Ok(())
     }
 
     fn trigger_compaction(&self) -> Result<()> {

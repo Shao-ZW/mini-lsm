@@ -31,6 +31,7 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::StorageIterator;
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
@@ -477,7 +478,7 @@ impl LsmStorageInner {
             MergeIterator::create(memtable_iters_vec)
         };
 
-        let sst_iters = {
+        let l0_sst_iters = {
             let mut sst_iters_vec = Vec::with_capacity(state.l0_sstables.len());
 
             for sstable in state
@@ -492,7 +493,7 @@ impl LsmStorageInner {
                             sstable,
                             KeySlice::from_slice(key),
                         )?;
-                        if iter.key() == KeySlice::from_slice(key) {
+                        if iter.is_valid() && iter.key() == KeySlice::from_slice(key) {
                             iter.next()?;
                         }
                         iter
@@ -509,8 +510,37 @@ impl LsmStorageInner {
             MergeIterator::create(sst_iters_vec)
         };
 
+        let l1_sst_iters = {
+            let l1_sstables: Vec<_> = state.levels[0]
+                .1
+                .iter()
+                .map(|sst_id| state.sstables[sst_id].clone())
+                .collect();
+
+            match lower {
+                Bound::Excluded(key) => {
+                    let mut iter = SstConcatIterator::create_and_seek_to_key(
+                        l1_sstables,
+                        KeySlice::from_slice(key),
+                    )?;
+                    if iter.is_valid() && iter.key() == KeySlice::from_slice(key) {
+                        iter.next()?;
+                    }
+                    iter
+                }
+                Bound::Included(key) => SstConcatIterator::create_and_seek_to_key(
+                    l1_sstables,
+                    KeySlice::from_slice(key),
+                )?,
+                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_sstables)?,
+            }
+        };
+
         let lsm_iterator = LsmIterator::new(
-            TwoMergeIterator::create(memtable_iters, sst_iters)?,
+            TwoMergeIterator::create(
+                TwoMergeIterator::create(memtable_iters, l0_sst_iters)?,
+                l1_sst_iters,
+            )?,
             map_bound(upper),
         )?;
 
