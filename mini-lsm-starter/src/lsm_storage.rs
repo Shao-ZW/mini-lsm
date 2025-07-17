@@ -15,7 +15,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,7 +49,7 @@ pub struct LsmStorageState {
     /// The current memtable.
     pub memtable: Arc<MemTable>,
     /// Immutable memtables, from latest to earliest.
-    pub imm_memtables: VecDeque<Arc<MemTable>>,
+    pub imm_memtables: Vec<Arc<MemTable>>,
     /// L0 SSTs, from latest to earliest.
     pub l0_sstables: Vec<usize>,
     /// SsTables sorted by key range; L1 - L_max for leveled compaction, or tiers for tiered
@@ -77,7 +77,7 @@ impl LsmStorageState {
         };
         Self {
             memtable: Arc::new(MemTable::create(0)),
-            imm_memtables: VecDeque::new(),
+            imm_memtables: Vec::new(),
             l0_sstables: Vec::new(),
             levels,
             sstables: Default::default(),
@@ -409,7 +409,7 @@ impl LsmStorageInner {
 
             let mut new_state = (**state).clone();
             let old_memtable = Arc::clone(&new_state.memtable);
-            new_state.imm_memtables.push_front(old_memtable);
+            new_state.imm_memtables.insert(0, old_memtable);
             new_state.memtable = Arc::new(new_memtable);
 
             *state = Arc::new(new_state);
@@ -426,7 +426,7 @@ impl LsmStorageInner {
 
         let imm_memtable = new_state
             .imm_memtables
-            .pop_back()
+            .pop()
             .ok_or(anyhow!("No imm memtable to flush"))?;
 
         let (sst_id, sst) = {
