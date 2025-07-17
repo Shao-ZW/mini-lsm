@@ -328,9 +328,10 @@ impl LsmStorageInner {
             }
         }
 
-        let sst_iters = {
-            let key = KeySlice::from_slice(key);
-            let mut sst_iters_vec = Vec::with_capacity(state.l0_sstables.len());
+        let key = KeySlice::from_slice(key);
+
+        let l0_sst_iters = {
+            let mut l0_sst_iters_vec = Vec::with_capacity(state.l0_sstables.len());
 
             for sstable in state
                 .l0_sstables
@@ -338,17 +339,32 @@ impl LsmStorageInner {
                 .map(|sst_id| state.sstables[sst_id].clone())
                 .filter(|sst| sst.bloom_filter(key))
             {
-                let sst_iter = SsTableIterator::create_and_seek_to_key(sstable, key)?;
-                sst_iters_vec.push(Box::new(sst_iter));
+                l0_sst_iters_vec.push(Box::new(SsTableIterator::create_and_seek_to_key(
+                    sstable, key,
+                )?));
             }
 
-            MergeIterator::create(sst_iters_vec)
+            MergeIterator::create(l0_sst_iters_vec)
         };
 
-        if sst_iters.is_valid() && sst_iters.key() == KeySlice::from_slice(key) {
-            return Ok(
-                Some(Bytes::copy_from_slice(sst_iters.value())).filter(|value| !value.is_empty())
-            );
+        if l0_sst_iters.is_valid() && l0_sst_iters.key() == key {
+            return Ok(Some(Bytes::copy_from_slice(l0_sst_iters.value()))
+                .filter(|value| !value.is_empty()));
+        }
+
+        for (_, sst_ids) in &state.levels {
+            let sstables = sst_ids
+                .iter()
+                .map(|sst_id| state.sstables[sst_id].clone())
+                .collect();
+
+            let iter = SstConcatIterator::create_and_seek_to_key(sstables, key)?;
+
+            if iter.is_valid() && iter.key() == key {
+                return Ok(
+                    Some(Bytes::copy_from_slice(iter.value())).filter(|value| !value.is_empty())
+                );
+            }
         }
 
         Ok(None)
@@ -510,36 +526,65 @@ impl LsmStorageInner {
             MergeIterator::create(sst_iters_vec)
         };
 
-        let l1_sst_iters = {
-            let l1_sstables: Vec<_> = state.levels[0]
-                .1
-                .iter()
-                .map(|sst_id| state.sstables[sst_id].clone())
-                .collect();
+        let sst_iters = {
+            let mut sst_iters_vec = Vec::new();
 
             match lower {
                 Bound::Excluded(key) => {
-                    let mut iter = SstConcatIterator::create_and_seek_to_key(
-                        l1_sstables,
-                        KeySlice::from_slice(key),
-                    )?;
-                    if iter.is_valid() && iter.key() == KeySlice::from_slice(key) {
-                        iter.next()?;
+                    for (_, sst_ids) in &state.levels {
+                        let sstables = sst_ids
+                            .iter()
+                            .map(|sst_id| state.sstables[sst_id].clone())
+                            .collect();
+
+                        let mut iter = SstConcatIterator::create_and_seek_to_key(
+                            sstables,
+                            KeySlice::from_slice(key),
+                        )?;
+
+                        if iter.is_valid() && iter.key() == KeySlice::from_slice(key) {
+                            iter.next()?;
+                        }
+
+                        sst_iters_vec.push(Box::new(iter));
                     }
-                    iter
                 }
-                Bound::Included(key) => SstConcatIterator::create_and_seek_to_key(
-                    l1_sstables,
-                    KeySlice::from_slice(key),
-                )?,
-                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_sstables)?,
+                Bound::Included(key) => {
+                    for (_, sst_ids) in &state.levels {
+                        let sstables = sst_ids
+                            .iter()
+                            .map(|sst_id| state.sstables[sst_id].clone())
+                            .collect();
+
+                        let iter = SstConcatIterator::create_and_seek_to_key(
+                            sstables,
+                            KeySlice::from_slice(key),
+                        )?;
+
+                        sst_iters_vec.push(Box::new(iter));
+                    }
+                }
+                Bound::Unbounded => {
+                    for (_, sst_ids) in &state.levels {
+                        let sstables = sst_ids
+                            .iter()
+                            .map(|sst_id| state.sstables[sst_id].clone())
+                            .collect();
+
+                        let iter = SstConcatIterator::create_and_seek_to_first(sstables)?;
+
+                        sst_iters_vec.push(Box::new(iter));
+                    }
+                }
             }
+
+            MergeIterator::create(sst_iters_vec)
         };
 
         let lsm_iterator = LsmIterator::new(
             TwoMergeIterator::create(
                 TwoMergeIterator::create(memtable_iters, l0_sst_iters)?,
-                l1_sst_iters,
+                sst_iters,
             )?,
             map_bound(upper),
         )?;
