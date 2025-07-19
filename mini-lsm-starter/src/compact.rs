@@ -321,7 +321,65 @@ impl LsmStorageInner {
                     Ok(compact_sstables)
                 }
             }
+            CompactionTask::Tiered(TieredCompactionTask {
+                tiers,
+                bottom_tier_included,
+            }) => {
+                let mut sstable_iters = {
+                    let mut iters = Vec::with_capacity(tiers.len());
+                    for (_, sst_ids) in tiers {
+                        let iter = SstConcatIterator::create_and_seek_to_first(
+                            sst_ids
+                                .iter()
+                                .map(|sst_id| state.sstables[sst_id].clone())
+                                .collect(),
+                        )?;
+                        iters.push(Box::new(iter));
+                    }
+                    MergeIterator::create(iters)
+                };
 
+                let mut sstable_builder = Some(SsTableBuilder::new(self.options.block_size));
+                let mut compact_sstables = Vec::new();
+
+                while sstable_iters.is_valid() {
+                    if sstable_builder.is_none() {
+                        sstable_builder = Some(SsTableBuilder::new(self.options.block_size));
+                    }
+
+                    let builder = sstable_builder.as_mut().unwrap();
+                    if !sstable_iters.value().is_empty() {
+                        builder.add(sstable_iters.key(), sstable_iters.value());
+                    }
+
+                    if builder.estimated_size() >= self.options.target_sst_size {
+                        let builder = sstable_builder.take().unwrap();
+                        let sst_id = self.next_sst_id();
+                        let sstable = builder.build(
+                            sst_id,
+                            Some(self.block_cache.clone()),
+                            self.path_of_sst(sst_id),
+                        )?;
+
+                        compact_sstables.push(Arc::new(sstable));
+                    }
+
+                    sstable_iters.next()?;
+                }
+
+                if let Some(builder) = sstable_builder {
+                    let sst_id = self.next_sst_id();
+                    let sstable = builder.build(
+                        sst_id,
+                        Some(self.block_cache.clone()),
+                        self.path_of_sst(sst_id),
+                    )?;
+
+                    compact_sstables.push(Arc::new(sstable));
+                }
+
+                Ok(compact_sstables)
+            }
             _ => unimplemented!(),
         }
     }
